@@ -20,7 +20,13 @@ export async function supabaseFetch(env, path, options = {}) {
 
   if (!response.ok) {
     console.log("SUPABASE_ERROR", path, response.status, JSON.stringify(data));
-    throw new Error("Supabase request failed");
+    const error = new Error(data?.message || "Supabase request failed");
+    error.status = response.status;
+    error.code = data?.code || "";
+    error.details = data?.details || "";
+    error.hint = data?.hint || "";
+    error.path = path;
+    throw error;
   }
 
   return data;
@@ -51,6 +57,14 @@ export async function supabasePatch(env, table, filters, payload) {
   });
 }
 
+export async function supabaseDelete(env, table, filters) {
+  const query = buildQuery(filters);
+  return supabaseFetch(env, `${table}?${query}`, {
+    method: "DELETE",
+    headers: { Prefer: "return=representation" },
+  });
+}
+
 export async function getOrCreateUser(env, message) {
   const telegramUserId = String(message?.from?.id || "");
   if (!telegramUserId) throw new Error("Telegram user id missing");
@@ -76,6 +90,16 @@ export async function getOrCreateUser(env, message) {
     is_admin: false,
     last_seen_at: new Date().toISOString(),
   });
+}
+
+export async function getAllowedUserByTelegramId(env, telegramUserId) {
+  const rows = await supabaseGet(env, "users", {
+    telegram_user_id: `eq.${String(telegramUserId)}`,
+    is_allowed: "eq.true",
+    select: "*",
+    limit: "1",
+  });
+  return Array.isArray(rows) ? rows[0] || null : null;
 }
 
 export async function updateUserAllowed(env, telegramUserId, inviteCode) {
@@ -108,4 +132,158 @@ export async function getAllowedUsers(env) {
     is_allowed: "eq.true",
     select: "*",
   });
+}
+
+export async function getTransactionsForRange(env, userId, start, end) {
+  return supabaseGet(env, "transactions", {
+    user_id: `eq.${userId}`,
+    transaction_at: `gte.${start}`,
+    select: "*",
+    order: "transaction_at.desc",
+  }).then((rows) => (rows || []).filter((row) => row.transaction_at < end));
+}
+
+export async function getRecentTransactions(env, userId, limit = 5) {
+  return supabaseGet(env, "transactions", {
+    user_id: `eq.${userId}`,
+    select: "*",
+    order: "transaction_at.desc",
+    limit: String(limit),
+  });
+}
+
+export async function getTasksByStatus(env, userId, status, limit = 10) {
+  return supabaseGet(env, "tasks", {
+    user_id: `eq.${userId}`,
+    status: `eq.${status}`,
+    select: "*",
+    order: status === "done" ? "completed_at.desc" : "created_at.asc",
+    limit: String(limit),
+  });
+}
+
+export async function getTodayTasks(env, userId, start, end) {
+  const rows = await supabaseGet(env, "tasks", {
+    user_id: `eq.${userId}`,
+    due_at: `gte.${start}`,
+    select: "*",
+    order: "due_at.asc",
+    limit: "20",
+  });
+  return (rows || []).filter((task) => task.due_at && task.due_at < end);
+}
+
+export async function getActiveReminders(env, userId, limit = 10) {
+  return supabaseGet(env, "reminders", {
+    user_id: `eq.${userId}`,
+    sent: "eq.false",
+    remind_at: `gte.${new Date().toISOString()}`,
+    select: "*",
+    order: "remind_at.asc",
+    limit: String(limit),
+  });
+}
+
+export async function getTodayReminders(env, userId, start, end) {
+  const rows = await supabaseGet(env, "reminders", {
+    user_id: `eq.${userId}`,
+    remind_at: `gte.${start}`,
+    select: "*",
+    order: "remind_at.asc",
+    limit: "20",
+  });
+  return (rows || []).filter((reminder) => reminder.remind_at < end);
+}
+
+export async function getRecentNotes(env, userId, limit = 5) {
+  return supabaseGet(env, "notes", {
+    user_id: `eq.${userId}`,
+    select: "*",
+    order: "created_at.desc",
+    limit: String(limit),
+  });
+}
+
+export async function createPendingAction(env, userId, chatId, actionType, payload, originalText, transcribedText = null) {
+  return supabaseInsert(env, "pending_actions", {
+    user_id: userId,
+    chat_id: String(chatId),
+    action_type: actionType,
+    payload,
+    original_text: originalText,
+    transcribed_text: transcribedText,
+    status: "pending",
+  });
+}
+
+export function isMissingPendingActionsTableError(error) {
+  return error?.path?.startsWith("pending_actions") &&
+    (error.status === 404 || error.code === "42P01" || /pending_actions/i.test(error.message || ""));
+}
+
+export async function getPendingAction(env, pendingActionId) {
+  const rows = await supabaseGet(env, "pending_actions", {
+    id: `eq.${pendingActionId}`,
+    select: "*",
+    limit: "1",
+  });
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+export async function updatePendingActionStatus(env, pendingActionId, status) {
+  const rows = await supabasePatch(
+    env,
+    "pending_actions",
+    { id: `eq.${pendingActionId}` },
+    {
+      status,
+      updated_at: new Date().toISOString(),
+    }
+  );
+  return Array.isArray(rows) ? rows[0] || null : rows;
+}
+
+const RECORD_TABLES = {
+  transaction: "transactions",
+  task: "tasks",
+  reminder: "reminders",
+  note: "notes",
+};
+
+export function getRecordTable(recordType) {
+  return RECORD_TABLES[recordType] || null;
+}
+
+export async function getUserRecord(env, recordType, userId, recordId) {
+  const table = getRecordTable(recordType);
+  if (!table) return null;
+  const rows = await supabaseGet(env, table, {
+    id: `eq.${recordId}`,
+    user_id: `eq.${userId}`,
+    select: "*",
+    limit: "1",
+  });
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+export async function updateUserRecord(env, recordType, userId, recordId, payload) {
+  const table = getRecordTable(recordType);
+  if (!table) return null;
+  const rows = await supabasePatch(
+    env,
+    table,
+    { id: `eq.${recordId}`, user_id: `eq.${userId}` },
+    payload
+  );
+  return Array.isArray(rows) ? rows[0] || null : rows;
+}
+
+export async function deleteUserRecord(env, recordType, userId, recordId) {
+  const table = getRecordTable(recordType);
+  if (!table) return null;
+  const rows = await supabaseDelete(env, table, {
+    id: `eq.${recordId}`,
+    user_id: `eq.${userId}`,
+  });
+  return Array.isArray(rows) ? rows[0] || null : rows;
 }

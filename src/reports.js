@@ -4,18 +4,18 @@ import { getAllowedUsers, supabaseGet, supabaseInsert } from "./supabase.js";
 import { formatMoney, getDateRange } from "./utils.js";
 
 export async function generateDailyReport(env, user) {
-  return generateReport(env, user, "daily");
+  return generateReport(env, user, "daily", { save: false });
 }
 
 export async function generateWeeklyReport(env, user) {
-  return generateReport(env, user, "weekly");
+  return generateReport(env, user, "weekly", { save: false });
 }
 
 export async function generateMonthlyReport(env, user) {
-  return generateReport(env, user, "monthly");
+  return generateReport(env, user, "monthly", { save: false });
 }
 
-export async function generateReport(env, user, reportType) {
+export async function generateReport(env, user, reportType, options = {}) {
   const range = getDateRange(reportType);
   const [transactions, tasks] = await Promise.all([
     supabaseGet(env, "transactions", {
@@ -42,7 +42,9 @@ export async function generateReport(env, user, reportType) {
   const summary = summarize(periodTransactions, periodTasks);
   const text = buildReportText(reportType, summary);
 
-  await saveReport(env, user.id, reportType, range.start, range.end, text);
+  if (options.save) {
+    await saveReport(env, user.id, reportType, range.start, range.end, text);
+  }
   return text;
 }
 
@@ -106,7 +108,7 @@ export async function sendScheduledReports(env, reportType) {
   for (const user of users || []) {
     if (!user.chat_id) continue;
     try {
-      const text = await generateReport(env, user, reportType);
+      const text = await generateReport(env, user, reportType, { save: true });
       await sendMessage(env, user.chat_id, text);
       sentCount++;
     } catch (error) {

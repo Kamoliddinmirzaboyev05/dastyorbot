@@ -21,6 +21,16 @@ const EMPTY_PARSED = {
 };
 
 export async function parseUserMessage(env, text) {
+  const englishDeterministic = parseEnglishDeterministic(text);
+  if (hasAnyParsedItem(englishDeterministic)) {
+    return normalizeParsedData(englishDeterministic, text);
+  }
+
+  const explicit = detectExplicitPrefix(text);
+  if (explicit.prefix) {
+    return normalizeParsedData(parsePrefixedMessage(env, explicit, text), text);
+  }
+
   const deterministicFinance = parseSimpleFinanceText(text);
   const deterministicTask = parseSimpleTaskReminder(text);
   const deterministicNote = parseSimpleNote(text);
@@ -92,6 +102,73 @@ export async function parseUserMessage(env, text) {
   }
 }
 
+export function detectExplicitPrefix(text) {
+  const raw = String(text || "").trim();
+  const firstLine = raw.split(/\r?\n/)[0] || "";
+  const match = firstLine.match(/^\s*(reja|vazifa|eslatma|qayd|note)\b[:,-]?\s*/i);
+  if (!match) return { prefix: null, body: raw };
+
+  const prefix = normalizeText(match[1]);
+  return {
+    prefix,
+    body: raw.slice(match[0].length).trim(),
+  };
+}
+
+function parsePrefixedMessage(env, explicit, originalText) {
+  const body = explicit.body || originalText;
+
+  if (explicit.prefix === "qayd" || explicit.prefix === "note") {
+    return {
+      ...EMPTY_PARSED,
+      notes: [{ content: body }],
+    };
+  }
+
+  const taskParsed = parseSimpleTaskReminder(body);
+  if (explicit.prefix === "eslatma") {
+    if (taskParsed.reminders.length > 0) return { ...EMPTY_PARSED, reminders: taskParsed.reminders };
+    const task = taskParsed.tasks[0];
+    return {
+      ...EMPTY_PARSED,
+      reminders: [{
+        title: task?.title || clampText(body, 160),
+        remind_at: task?.due_at || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      }],
+    };
+  }
+
+  return {
+    ...EMPTY_PARSED,
+    tasks: taskParsed.tasks.length > 0
+      ? taskParsed.tasks.map((task) => ({
+        ...task,
+        title: cleanTaskTitle(task.title),
+      }))
+      : [buildPrefixedTask(body)],
+  };
+}
+
+function buildPrefixedTask(body) {
+  const normalized = normalizeText(body);
+  return {
+    title: cleanTaskTitle(body),
+    description: null,
+    due_at: normalized.includes("bugun") ? todayAtTashkentIso(23, 59) : null,
+    priority: "medium",
+    remind_before_minutes: null,
+  };
+}
+
+function cleanTaskTitle(text) {
+  return clampText(String(text || "")
+    .replace(/\b(bugun|ertaga)\b/gi, "")
+    .replace(/\b(qilishim kerak|tugatishim kerak|bajarishim kerak|kerak)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[,.\s-]+|[,.\s-]+$/g, "") || "Reja", 160);
+}
+
 export function parseSimpleFinanceText(text) {
   const normalized = normalizeUzbekText(text);
   const transactions = [];
@@ -160,11 +237,11 @@ export function parseWithGroq(env, text) {
           role: "system",
           content: `Sen DastyorBot uchun qat'iy JSON parser vazifasini bajaryapsan.
 
-Foydalanuvchi o'zbekcha yozadi. Matnni transactions, tasks, reminders, notes turlariga ajrat.
+Foydalanuvchi o'zbekcha yoki inglizcha yozadi/gapiradi. Matnni transactions, tasks, reminders, notes turlariga ajrat.
 
 Qoidalar:
 - Faqat valid JSON qaytar. Markdown va izoh yozma.
-- Pul miqdorlari UZS integer bo'lsin: 35 ming=35000, 1 mln=1000000, 1.5 mln=1500000.
+- Pul miqdorlari UZS integer bo'lsin: 35 ming=35000, 35 thousand=35000, 1 mln=1000000, 1 million=1000000, 1.5 million=1500000.
 - Transaction type faqat income yoki expense.
 - Transaction category faqat: food, transport, education, shopping, health, entertainment, salary, freelance, business, gift, other.
 - Task fieldlari: title, description, due_at, priority, remind_before_minutes.
@@ -172,7 +249,10 @@ Qoidalar:
 - Note fieldlari: content.
 - Bugungi vaqt: ${now}. Timezone: Asia/Tashkent.
 - "Bugun 20:00 da dars qilishim kerak 10 daqiqa oldin eslat" task + reminder sifatida qaytsin.
-- "Eslab qol" bilan boshlangan kelishuv/malumot notes bo'lsin, agar real xarajat yoki kirim bo'lmasa.
+- "task finish reading today" task bo'lsin.
+- "remind me tomorrow at 3 PM to go to course" reminder bo'lsin.
+- "note Ali project price is 2 million" note bo'lsin, transaction emas.
+- "Eslab qol" yoki "note/remember" bilan boshlangan kelishuv/malumot notes bo'lsin, agar real xarajat yoki kirim bo'lmasa.
 
 JSON format:
 {
@@ -295,17 +375,115 @@ export function sanitizeParsedData(parsed, originalText = "") {
 
 export function hasReminderIntent(text) {
   const normalized = normalizeText(text);
-  return /eslat|eslatib qo'y|ogohlantir|reminder|\d+\s*(daqiqa|minut|soat)\s*oldin|yarim soat oldin/.test(normalized);
+  return /eslat|eslatib qo'y|ogohlantir|remind|reminder|alert|notify|\d+\s*(daqiqa|minut|soat|minute|minutes|hour|hours)\s*(oldin|before)|yarim soat oldin|half an hour before/.test(normalized);
 }
 
 export function hasNoteIntent(text) {
   const normalized = normalizeText(text);
-  return /eslab qol|qayd|note|yodda saqla/.test(normalized);
+  return /eslab qol|qayd|note|remember|keep in mind|save this|yodda saqla/.test(normalized);
 }
 
 export function hasTaskIntent(text) {
   const normalized = normalizeText(text);
-  return /kerak|qilishim kerak|tugatishim kerak|o'qishim kerak|oqishim kerak|borishim kerak|topshirishim kerak/.test(normalized);
+  return /kerak|qilishim kerak|tugatishim kerak|o'qishim kerak|oqishim kerak|borishim kerak|topshirishim kerak|\b(task|todo|plan|need to|have to|finish|complete|do)\b/.test(normalized);
+}
+
+function parseEnglishDeterministic(text) {
+  const normalized = normalizeText(text);
+
+  if (/^(note|remember|keep in mind|save this)\b/.test(normalized)) {
+    return {
+      ...EMPTY_PARSED,
+      notes: [{ content: clampText(String(text).replace(/^\s*(note|remember|keep in mind|save this)\b[:,\s-]*/i, ""), 1000) }],
+    };
+  }
+
+  const finance = parseSimpleFinanceText(text);
+  if (finance.transactions.length > 0 || finance.status) return finance;
+
+  if (/(remind me|reminder|alert me|notify me)/.test(normalized)) {
+    const reminder = parseEnglishReminder(text);
+    if (reminder) return { ...EMPTY_PARSED, reminders: [reminder] };
+  }
+
+  if (/^(task|todo|plan)\b|i need to|i have to|need to|have to/.test(normalized)) {
+    return {
+      ...EMPTY_PARSED,
+      tasks: [parseEnglishTask(text)],
+    };
+  }
+
+  return { ...EMPTY_PARSED };
+}
+
+function parseEnglishReminder(text) {
+  const remindAt = parseEnglishDateTime(text);
+  if (!remindAt) return null;
+  return {
+    title: extractEnglishReminderTitle(text),
+    remind_at: remindAt,
+  };
+}
+
+function parseEnglishTask(text) {
+  const dueAt = parseEnglishDateTime(text);
+  return {
+    title: extractEnglishTaskTitle(text),
+    description: null,
+    due_at: dueAt,
+    priority: /urgent|important|high priority/i.test(text) ? "high" : "medium",
+    remind_before_minutes: null,
+  };
+}
+
+function parseEnglishDateTime(text) {
+  const normalized = normalizeText(text);
+  const time = normalized.match(/\b(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+  if (!time) {
+    if (/\btoday\b/.test(normalized)) return todayAtTashkentIso(23, 59);
+    if (/\btomorrow\b/.test(normalized)) return tomorrowAtTashkentIso(23, 59);
+    return null;
+  }
+
+  let hour = Number(time[1]);
+  const minute = Number(time[2] || 0);
+  const meridiem = time[3];
+  if (meridiem === "pm" && hour < 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  return /\btomorrow\b/.test(normalized)
+    ? tomorrowAtTashkentIso(hour, minute)
+    : todayAtTashkentIso(hour, minute);
+}
+
+function extractEnglishTaskTitle(text) {
+  return clampText(String(text)
+    .replace(/^\s*(task|todo|plan)\b[:,\s-]*/i, "")
+    .replace(/\b(i need to|i have to|need to|have to|today|tomorrow)\b/gi, "")
+    .replace(/\bat\s*\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim() || "Task", 160);
+}
+
+function extractEnglishReminderTitle(text) {
+  return clampText(String(text)
+    .replace(/\b(remind me|reminder|alert me|notify me)\b/gi, "")
+    .replace(/\b(today|tomorrow)\b/gi, "")
+    .replace(/\bat\s*\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi, "")
+    .replace(/\b(to|about)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim() || "Reminder", 160);
+}
+
+function hasAnyParsedItem(parsed) {
+  return Boolean(
+    parsed.transactions?.length ||
+    parsed.tasks?.length ||
+    parsed.reminders?.length ||
+    parsed.notes?.length ||
+    parsed.status
+  );
 }
 
 function parseSimpleTaskReminder(text) {
@@ -397,7 +575,7 @@ function parseAmount(value, unit = "") {
 
 function findMoneyMatches(text) {
   const matches = [];
-  const digitPattern = /(?:[$]\s*)?(?<!\d)(\d+(?:(?:[,\s]\d{3})|(?:[.,]\d+))*)\s*(ming|mln|million|m|k)?(?!\d)/g;
+  const digitPattern = /(?:[$]\s*)?(?<!\d)(\d+(?:(?:[,\s]\d{3})|(?:[.,]\d+))*)\s*(ming|thousand|grand|mln|million|m|k)?(?!\d)/g;
 
   for (const match of text.matchAll(digitPattern)) {
     const amount = parseDigitAmount(match[1], match[2]);
@@ -426,7 +604,7 @@ function parseDigitAmount(value, unit = "") {
   const base = Number(compact);
   if (!Number.isFinite(base) || base <= 0) return null;
   const normalizedUnit = normalizeText(unit);
-  if (["ming", "k"].includes(normalizedUnit)) return Math.round(base * 1000);
+  if (["ming", "thousand", "grand", "k"].includes(normalizedUnit)) return Math.round(base * 1000);
   if (["mln", "million", "m"].includes(normalizedUnit)) return Math.round(base * 1000000);
   return Math.round(base);
 }
@@ -473,7 +651,7 @@ function parseUzbekNumberPhrase(tokens) {
     return { amount: 1500000, confidence: "medium" };
   }
 
-  const number = parseUzbekCardinal(numberTokens);
+  const number = parseUzbekCardinal(numberTokens) || parseEnglishCardinal(numberTokens);
   if (!number) return null;
 
   return {
@@ -533,8 +711,52 @@ function parseUzbekCardinal(tokens) {
 }
 
 function getMultiplier(token) {
-  if (token === "ming") return 1000;
+  if (token === "ming" || token === "thousand" || token === "grand") return 1000;
   if (token === "million" || token === "mln") return 1000000;
+  return null;
+}
+
+function parseEnglishCardinal(tokens) {
+  const units = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+  };
+  const tens = {
+    twenty: 20,
+    thirty: 30,
+    forty: 40,
+    fifty: 50,
+    sixty: 60,
+    seventy: 70,
+    eighty: 80,
+    ninety: 90,
+  };
+  const cleanTokens = tokens.flatMap((token) => token.split("-")).filter(Boolean);
+
+  if (cleanTokens.length === 1) return units[cleanTokens[0]] || tens[cleanTokens[0]] || null;
+  if (cleanTokens.length === 2 && tens[cleanTokens[0]] && units[cleanTokens[1]]) {
+    return tens[cleanTokens[0]] + units[cleanTokens[1]];
+  }
+  if (cleanTokens.length === 2 && cleanTokens[1] === "hundred" && units[cleanTokens[0]]) {
+    return units[cleanTokens[0]] * 100;
+  }
   return null;
 }
 
@@ -608,7 +830,7 @@ function dedupeTransactions(items) {
 
 function hasComplexIntent(text) {
   const normalized = normalizeText(text);
-  return /(kerak|eslat|eslab qol|vazifa|hisobot|\?|qildim)/.test(normalized) &&
+  return /(kerak|eslat|remind|note|task|todo|eslab qol|vazifa|hisobot|\?|qildim)/.test(normalized) &&
     /[.?!]|,.*(kerak|eslat)/.test(normalized);
 }
 
@@ -619,7 +841,7 @@ function hasSimilarTransaction(items, tx) {
 function hasFinanceIntent(text) {
   const normalized = normalizeText(text);
   return detectTransactionType(normalized) ||
-    /(ming|mln|million|\$|so'm|som|taksi|taxi|tushlik|ovqat|oylik|maosh|daromad|xarajat|sarfladim|spent|paid|bought)/.test(normalized);
+    /(ming|thousand|grand|mln|million|\$|so'm|som|taksi|taxi|cab|uber|tushlik|lunch|food|ovqat|salary|oylik|maosh|income|daromad|xarajat|sarfladim|spent|paid|bought|earned|received|got paid)/.test(normalized);
 }
 
 function dedupeReminders(reminders) {

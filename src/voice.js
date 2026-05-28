@@ -4,9 +4,10 @@ import { normalizeUzbekText } from "./utils.js";
 
 const MAX_VOICE_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 const TRANSCRIPTION_PROMPT =
-  "Uzbek Latin speech. Do not translate. Preserve numbers exactly as spoken. Common words: ming, million, taksi, tushlik, sarfladim, xarajat qildim, oylik oldim.";
+  "English personal assistant voice note. Do not translate. Preserve numbers, dates, times, and money exactly. Common intents: I spent 35 thousand on taxi, I got 1 million salary, task finish reading today, remind me tomorrow at 3 PM, note Ali project price is 2 million.";
 const TRANSCRIPTION_ATTEMPTS = [
-  { model: "whisper-large-v3", language: "uz" },
+  { model: "whisper-large-v3", language: "en" },
+  { model: "whisper-large-v3" },
 ];
 
 export async function getTelegramFilePath(env, fileId) {
@@ -82,8 +83,9 @@ export function scoreTranscriptionCandidate(text) {
   if (finance.status === "needs_confirmation") score += 25;
   if (amount.confidence === "high") score += 30;
   if (amount.confidence === "medium") score += 15;
-  if (/(ming|mln|million|\$|so'm|som)/.test(normalized)) score += 10;
-  if (/(taksi|taxi|tushlik|xarajat|sarfladim|spent|paid|oylik|daromad)/.test(normalized)) score += 10;
+  if (/(ming|thousand|grand|mln|million|\$|so'm|som)/.test(normalized)) score += 10;
+  if (/(taksi|taxi|cab|uber|tushlik|lunch|xarajat|sarfladim|spent|paid|bought|salary|income|earned|received|oylik|daromad)/.test(normalized)) score += 10;
+  if (/(task|todo|remind|reminder|note|remember)/.test(normalized)) score += 20;
   if (normalized.length >= 12) score += 5;
 
   const shortWordCount = normalized.split(/\s+/).filter((word) => word.length <= 2).length;

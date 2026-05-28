@@ -86,6 +86,16 @@ export function formatTashkentTime(isoString) {
   return `${String(parts.hours).padStart(2, "0")}:${String(parts.minutes).padStart(2, "0")}`;
 }
 
+export function formatTashkentDateTime(isoString) {
+  if (!isoString) return "";
+  const parts = toTashkentParts(new Date(isoString));
+  const day = String(parts.date).padStart(2, "0");
+  const month = String(parts.month + 1).padStart(2, "0");
+  const hours = String(parts.hours).padStart(2, "0");
+  const minutes = String(parts.minutes).padStart(2, "0");
+  return `${day}.${month}.${parts.year} ${hours}:${minutes}`;
+}
+
 export function getDateRange(period, baseDate = new Date()) {
   const parts = toTashkentParts(baseDate);
 
